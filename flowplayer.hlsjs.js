@@ -54,6 +54,7 @@
                     recoverMediaErrorDate,
                     swapAudioCodecDate,
                     recoveryClass = "is-seeking",
+                    posterClass = "is-poster",
                     doRecover = function (conf, etype, isNetworkError) {
                         if (conf.debug) {
                             console.log("recovery." + engineName, "<-", etype);
@@ -77,7 +78,12 @@
                         if (recover > 0) {
                             recover -= 1;
                         }
-                        bean.one(videoTag, "timeupdate." + engineName, function () {
+                        bean.one(videoTag, "seeked." + engineName, function () {
+                            if (videoTag.paused) {
+                                common.removeClass(root, posterClass);
+                                player.poster = false;
+                                videoTag.play();
+                            }
                             common.removeClass(root, recoveryClass);
                         });
                     },
@@ -86,7 +92,6 @@
                     bc,
                     has_bg,
 
-                    posterClass = "is-poster",
                     addPoster = function () {
                         bean.one(videoTag, "timeupdate." + engineName, function () {
                             common.addClass(root, posterClass);
@@ -404,10 +409,13 @@
                                         }
 
                                         var ct = videoTag.currentTime,
-                                            buffered,
+                                            seekable = videoTag.seekable,
+                                            updatedVideo = player.video,
+                                            seekOffset = updatedVideo.seekOffset,
+                                            liveSyncPosition = player.dvr && hls.liveSyncPosition,
+                                            buffered = videoTag.buffered,
                                             buffer = 0,
                                             buffend = 0,
-                                            updatedVideo = player.video,
                                             src = updatedVideo.src,
                                             flush = false,
                                             loop = updatedVideo.loop,
@@ -420,7 +428,7 @@
                                         case "ready":
                                             arg = extend(updatedVideo, {
                                                 duration: videoTag.duration,
-                                                seekable: videoTag.seekable.end(null),
+                                                seekable: seekable.length && seekable.end(null),
                                                 width: videoTag.videoWidth,
                                                 height: videoTag.videoHeight,
                                                 url: src
@@ -446,6 +454,16 @@
                                             }
                                             break;
                                         case "progress":
+                                            if (player.dvr && liveSyncPosition) {
+                                                updatedVideo.duration = liveSyncPosition;
+                                                player.trigger('dvrwindow', [player, {
+                                                    start: seekOffset,
+                                                    end: liveSyncPosition
+                                                }]);
+                                                if (ct < seekOffset) {
+                                                    videoTag.currentTime = seekOffset;
+                                                }
+                                            }
                                             arg = ct;
                                             break;
                                         case "speed":
@@ -456,9 +474,8 @@
                                             break;
                                         case "buffer":
                                             try {
-                                                buffered = videoTag.buffered;
-                                                buffer = buffered.end(null);
-                                                if (!player.video.live && ct) {
+                                                buffer = buffered.length && buffered.end(null);
+                                                if (ct && buffer) {
                                                     // cycle through time ranges to obtain buffer
                                                     // nearest current time
                                                     for (i = buffered.length - 1; i > -1; i -= 1) {
@@ -506,20 +523,17 @@
                                                     (hlsUpdatedConf.recoverNetworkError && errorCode === 2) ||
                                                     (hlsUpdatedConf.recover && (errorCode === 2 || errorCode === 3))) {
                                                 doRecover(conf, flow, errorCode === 2);
-                                            } else {
-                                                arg = {code: errorCode || 3};
-                                                if (errorCode > 2) {
-                                                    arg.video = extend(updatedVideo, {
-                                                        src: src,
-                                                        url: src
-                                                    });
-                                                }
+                                                return false;
+                                            }
+
+                                            arg = {code: errorCode || 3};
+                                            if (errorCode > 2) {
+                                                arg.video = extend(updatedVideo, {
+                                                    src: src,
+                                                    url: src
+                                                });
                                             }
                                             break;
-                                        }
-
-                                        if (arg === false) {
-                                            return arg;
                                         }
 
                                         player.trigger(flow, [player, arg]);
@@ -536,15 +550,13 @@
                                     });
                                 });
 
-                                if (coreV6 && conf.poster) {
-                                    // engine too late, poster already removed
-                                    // abuse timeupdate to re-instate poster
-                                    player.on("stop." + engineName, addPoster);
-                                    // re-instate initial poster for live streams
-                                    if (player.live && !autoplay && !player.video.autoplay) {
-                                        bean.one(videoTag, "seeked." + engineName, addPoster);
+                                player.on("error." + engineName, function () {
+                                    if (hls) {
+                                        hls.destroy();
+                                        hls = 0;
                                     }
-                                }
+                                });
+
                                 if (!hlsUpdatedConf.bufferWhilePaused) {
                                     player.on("beforeseek." + engineName, function (e, api, pos) {
                                         if (api.paused) {
@@ -565,14 +577,17 @@
                                         }
                                         lastSelectedLevel = q;
                                     });
-                                }
 
-                                player.on("error." + engineName, function () {
-                                    if (hls) {
-                                        hls.destroy();
-                                        hls = 0;
+                                } else if (conf.poster) {
+                                    // v6 only
+                                    // engine too late, poster already removed
+                                    // abuse timeupdate to re-instate poster
+                                    player.on("stop." + engineName, addPoster);
+                                    // re-instate initial poster for live streams
+                                    if (player.live && !autoplay && !player.video.autoplay) {
+                                        bean.one(videoTag, "seeked." + engineName, addPoster);
                                     }
-                                });
+                                }
 
                                 common.prepend(common.find(".fp-player", root)[0], videoTag);
 
@@ -585,6 +600,8 @@
 
                             // #28 obtain api.video props before ready
                             player.video = video;
+
+                            // reset
                             maxLevel = 0;
 
                             Object.keys(hlsUpdatedConf).forEach(function (key) {
@@ -709,6 +726,11 @@
                                             bean.on(videoTag, 'timeupdate.' + engineName, metadataHandler);
                                         });
                                         break;
+                                    case "LEVEL_UPDATED":
+                                        if (player.dvr) {
+                                            player.video.seekOffset = data.details.fragments[0].start + hls.config.nudgeOffset;
+                                        }
+                                        break;
                                     case "ERROR":
                                         if (data.fatal || hlsUpdatedConf.strict) {
                                             switch (data.type) {
@@ -730,7 +752,6 @@
                                                 }
                                                 break;
                                             default:
-                                                hls.destroy();
                                                 fperr = 5;
                                             }
 
@@ -836,10 +857,6 @@
             // only load engine if it can be used
             engineImpl.engineName = engineName; // must be exposed
             engineImpl.canPlay = function (type, conf) {
-                var b = support.browser,
-                    wn = win.navigator,
-                    IE11 = wn.userAgent.indexOf("Trident/7") > -1;
-
                 if (conf[engineName] === false || conf.clip[engineName] === false) {
                     // engine disabled for player or clip
                     return false;
@@ -852,21 +869,8 @@
                     recoverMediaError: true
                 }, flowplayer.conf[engineName], conf[engineName], conf.clip[engineName]);
 
-                if (isHlsType(type)) {
-                    // allow all browsers for hlsjs debugging
-                    if (hlsconf.debug) {
-                        return true;
-                    }
-                    // https://bugzilla.mozilla.org/show_bug.cgi?id=1244294
-                    if (hlsconf.anamorphic &&
-                            wn.platform.indexOf("Win") === 0 && b.mozilla && b.version.indexOf("44.") === 0) {
-                        return false;
-                    }
-
-                    // https://github.com/dailymotion/hls.js/issues/9
-                    return IE11 || !b.safari;
-                }
-                return false;
+                // https://github.com/dailymotion/hls.js/issues/9
+                return isHlsType(type) && (!support.browser.safari || hlsconf.safari);
             };
 
             // put on top of engine stack

@@ -1,6 +1,6 @@
 {
   "name": "flowplayer-hlsjs",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Flowplayer HLS.js plugin",
   "main": "flowplayer.hlsjs.js",
   "scripts": {
@@ -21,7 +21,7 @@
   },
   "homepage": "https://github.com/flowplayer/flowplayer-hlsjs",
   "dependencies": {
-    "hls.js": "0.6.17",
+    "hls.js": "0.6.19",
     "webworkify-webpack": "^1.0.4"
   },
   "peerDependencies": {
